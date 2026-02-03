@@ -73,5 +73,5 @@ func (r *NodeSet) GetUID() string {
 
 func init() {
 	// Register resource type prefix for storage
-	resource.RegisterResourcePrefix("NodeSet", "nod")
+	resource.RegisterResourcePrefix("NodeSet", "nset")
 }
