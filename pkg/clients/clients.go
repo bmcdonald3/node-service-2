@@ -1,8 +1,6 @@
 package clients
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 )
