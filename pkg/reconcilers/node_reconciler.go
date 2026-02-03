@@ -15,6 +15,10 @@ type NodeReconciler struct {
 }
 
 func (r *NodeReconciler) ReconcileNode(ctx context.Context, res *node.Node) (reconcile.Result, error) {
+	if r.Clients == nil {
+        // Hardcoded URLs for now, or fetch from env vars
+        r.Clients = clients.NewServiceClients("http://localhost:8081", "http://localhost:8082")
+    }
 	// This function is the "Brain" of the Node resource.
     // It runs whenever a Node is created, updated, or the requeue timer expires.
 
