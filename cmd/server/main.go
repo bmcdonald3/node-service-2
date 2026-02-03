@@ -9,7 +9,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,9 +29,6 @@ import (
 	"github.com/OpenCHAMI/node-service/pkg/reconcilers"
 	"github.com/openchami/fabrica/pkg/events"
 	"github.com/openchami/fabrica/pkg/reconcile"
-
-	// CRITICAL: This Dot Import brings InitializeEventBus and GlobalEventBus into scope
-	. "github.com/OpenCHAMI/node-service/internal/middleware"
 )
 
 // Config holds all configuration for the service
@@ -117,6 +116,9 @@ func initConfig() {
 	viper.Unmarshal(config)
 }
 
+// Global reference for our manual setup
+var ManualEventBus events.EventBus
+
 func runServer(cmd *cobra.Command, args []string) error {
 	log.Printf("Starting node-service-2 server...")
 
@@ -124,50 +126,35 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err := storage.InitFileBackend(config.DataDir); err != nil {
 		return fmt.Errorf("failed to initialize file storage: %w", err)
 	}
-	log.Printf("File storage initialized in %s", config.DataDir)
 
-	// 2. Initialize Event Config
-	// FORCE prefix to "com.fabrica" to match generated code
-	eventConfig := &events.EventConfig{
-		Enabled:                true,
-		EventTypePrefix:        "com.fabrica",
-		LifecycleEventsEnabled: true,
-		ConditionEventsEnabled: true,
-	}
-	events.SetEventConfig(eventConfig)
-	events.InitializeEventBridge()
+	// 2. MANUAL EVENT BUS SETUP
+	// We create one bus right here. It starts automatically on creation.
+	ManualEventBus = events.NewInMemoryEventBus(100, 5)
+	
+	// Register it globally just in case
+	events.SetGlobalEventBus(ManualEventBus)
+	
+	log.Printf("Manual Event Bus initialized.")
 
-	// 3. Initialize the Global Event Bus (Using the function from dot import)
-	if err := InitializeEventBus(); err != nil {
-		log.Fatalf("Failed to initialize event bus: %v", err)
-	}
-	log.Printf("Event system initialized. Prefix: %s", eventConfig.EventTypePrefix)
-
-	// 4. Initialize Reconciliation
+	// 3. Initialize Reconciliation
 	if config.ReconcileEnabled {
 		ctx := context.Background()
 
-		// Access GlobalEventBus (from dot import)
-		if GlobalEventBus == nil {
-			log.Fatal("GlobalEventBus is nil! InitializeEventBus failed to set it.")
-		}
-		
-		// Debug Listener to verify events are flowing
-		GlobalEventBus.Subscribe(">", func(ctx context.Context, evt events.Event) error {
+		// Debug Listener
+		ManualEventBus.Subscribe(">", func(ctx context.Context, evt events.Event) error {
 			log.Printf(">>> EVENT SNIFFER: Received [%s]", evt.Type)
 			return nil
 		})
 
-		// Create Controller with Global Bus
-		controller := reconcile.NewController(GlobalEventBus, storage.Backend)
+		// Create Controller with OUR Manual Bus
+		controller := reconcile.NewController(ManualEventBus, storage.Backend)
 		storageClient := storage.NewStorageClient()
 
-		// Register Reconcilers
-		if err := reconcilers.RegisterReconcilers(controller, storageClient, GlobalEventBus); err != nil {
+		// Register Reconcilers with OUR Manual Bus
+		if err := reconcilers.RegisterReconcilers(controller, storageClient, ManualEventBus); err != nil {
 			log.Fatalf("Failed to register reconcilers: %v", err)
 		}
 
-		// Start Controller
 		if err := controller.Start(ctx); err != nil {
 			log.Fatalf("Failed to start reconciliation controller: %v", err)
 		}
@@ -175,12 +162,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 		log.Printf("Reconciliation controller started with %d workers", config.ReconcileWorkers)
 	}
 
-	// 5. Setup Router & Server
+	// 4. Setup Router & Server
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(EventMiddleware)
-	RegisterGeneratedRoutes(r) // Uses GlobalEventBus internally
+	
+	// FIX: Use our custom injector AND PASS THE BUS EXPLICITLY
+	r.Use(EventInjectorMiddleware) 
+	
+	RegisterGeneratedRoutes(r)
 	r.Get("/health", healthHandler)
 
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
@@ -212,4 +202,59 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 var versionCmd = &cobra.Command{
 	Use: "version",
 	Run: func(cmd *cobra.Command, args []string) { fmt.Println("v1.0.0") },
+}
+
+// --- CUSTOM MIDDLEWARE ---
+
+type responseBuffer struct {
+	http.ResponseWriter
+	body   *bytes.Buffer
+	status int
+}
+
+func (w *responseBuffer) Write(b []byte) (int, error) {
+	w.body.Write(b)
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *responseBuffer) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func EventInjectorMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		buf := &bytes.Buffer{}
+		wb := &responseBuffer{ResponseWriter: w, body: buf, status: 200}
+		next.ServeHTTP(wb, r)
+
+		if wb.status >= 200 && wb.status < 300 {
+			resourceType := ""
+			if r.URL.Path == "/nodes" { resourceType = "Node" }
+			if r.URL.Path == "/nodesets" { resourceType = "NodeSet" }
+
+			if resourceType != "" {
+				var respData map[string]interface{}
+				if err := json.Unmarshal(wb.body.Bytes(), &respData); err == nil {
+					if meta, ok := respData["metadata"].(map[string]interface{}); ok {
+						if uid, ok := meta["uid"].(string); ok {
+							
+							// MANUAL FIRE using the bus variable we control
+							eventType := fmt.Sprintf("com.fabrica.%s.created", resourceType)
+							evt, _ := events.NewEvent(eventType, "/api/"+resourceType, respData)
+							
+							ManualEventBus.Publish(context.Background(), *evt)
+							
+							log.Printf(">>> INJECTOR: Fired event for %s %s", resourceType, uid)
+						}
+					}
+				}
+			}
+		}
+	})
 }
