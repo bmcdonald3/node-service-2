@@ -18,8 +18,16 @@ type NodeSet struct {
 
 // NodeSetSpec defines the desired state of NodeSet
 type NodeSetSpec struct {
-	Description string `json:"description,omitempty" validate:"max=200"`
-	// Add your spec fields here
+	// 1. Explicit Selection
+    XNames []string `json:"xnames,omitempty"`
+    
+    // 2. Dynamic Selection (Labels)
+    // e.g. {"role": "compute", "subRole": "worker"}
+    Labels map[string]string `json:"labels,omitempty"`
+    
+    // 3. Regex Selection
+    // e.g. "x1000.*"
+    XNamePattern string `json:"xNamePattern,omitempty"`
 }
 
 // NodeSetStatus defines the observed state of NodeSet
@@ -28,6 +36,14 @@ type NodeSetStatus struct {
 	Message    string `json:"message,omitempty"`
 	Ready      bool   `json:"ready"`
 	// Add your status fields here
+	// The calculated list of nodes that match the Spec
+    ResolvedNodes []string `json:"resolvedNodes"`
+    
+    // How many nodes matched
+    Count int `json:"count"`
+    
+    // Hash to track if we need to re-calculate (optimization)
+    GenerationHash string  `json:"generationHash"`
 }
 
 // Validate implements custom validation logic for NodeSet
