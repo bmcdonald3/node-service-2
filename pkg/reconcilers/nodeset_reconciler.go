@@ -9,19 +9,23 @@ import (
 	"github.com/OpenCHAMI/node-service/pkg/resources/nodeset"
 )
 
-// NOTE: Do not define type NodeSetReconciler struct here.
-// It is already defined in nodeset_reconciler_generated.go.
-
 // reconcileNodeSet calculates which nodes belong to this set
 func (r *NodeSetReconciler) reconcileNodeSet(ctx context.Context, res *nodeset.NodeSet) error {
-	// DEBUG LOG: Prove the reconciler is running
 	fmt.Printf(">>> RECONCILING NODESET: %s\n", res.Metadata.Name)
 
 	// 1. Fetch ALL Nodes from storage
-	// We use the client embedded in the BaseReconciler
-	allNodes := []node.Node{}
-	if err := r.Client.List(ctx, "Node", &allNodes); err != nil {
+	// FIX: List returns ([]interface{}, error), not unmarshaling into a pointer
+	items, err := r.Client.List(ctx, "Node")
+	if err != nil {
 		return fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	// Manually cast the generic items to our concrete Node type
+	var allNodes []*node.Node
+	for _, item := range items {
+		if n, ok := item.(*node.Node); ok {
+			allNodes = append(allNodes, n)
+		}
 	}
 
 	// 2. Filter Nodes based on Spec
@@ -42,7 +46,7 @@ func (r *NodeSetReconciler) reconcileNodeSet(ctx context.Context, res *nodeset.N
 		matchedXNames = append(matchedXNames, res.Spec.XNames...)
 	}
 
-	// B. Label Selectors (e.g., "role": "compute")
+	// B. Label Selectors
 	if len(res.Spec.Labels) > 0 {
 		for _, n := range allNodes {
 			if isMatched(n.Spec.XName) {
@@ -63,7 +67,7 @@ func (r *NodeSetReconciler) reconcileNodeSet(ctx context.Context, res *nodeset.N
 		}
 	}
 
-	// C. Regex Pattern (e.g., "x1000.*")
+	// C. Regex Pattern
 	if res.Spec.XNamePattern != "" {
 		re, err := regexp.Compile(res.Spec.XNamePattern)
 		if err == nil {
