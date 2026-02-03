@@ -2,6 +2,7 @@ package reconcilers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/OpenCHAMI/node-service/pkg/clients"
 	"github.com/OpenCHAMI/node-service/pkg/resources/node"
@@ -13,6 +14,7 @@ import (
 // reconcileNode is the "Brain" of the Node resource.
 // The generated Reconcile() wrapper calls this function.
 func (r *NodeReconciler) reconcileNode(ctx context.Context, res *node.Node) error {
+	fmt.Printf(">>> RECONCILER ALIVE: Processing %s\n", res.Spec.XName)
 	// Initialize the client locally since we can't add fields to the struct
 	// In production, we might use a singleton pattern or environment variables
 	serviceClients := clients.NewServiceClients("http://localhost:8081", "http://localhost:8082")
